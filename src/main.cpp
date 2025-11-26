@@ -4,6 +4,7 @@
 #include <SPI.h>
 #include <SD.h>
 
+#define OVERWRITE true
 #define SERVER_IP "192.168.31.90" // MQTT 服务器 IP 地址
 #define SERVER_PORT 1884        // MQTT 服务器端口
 #define SSID "Mi3000T_2.4G"       // WiFi 名称
@@ -38,9 +39,11 @@ void mqttCallback(char* topic,
                   unsigned int length);            // MQTT 回调函数，处理收到的消息
 void readTemps();                                  // 读取所有通道的温度数据
 void publishTemp();                                // 发布温度数据
-void readFile(String path, String* content);                        // 读取SD卡文件内容
-void writeFile(String path,String* content);      // 写入内容到SD卡文件
+bool readFile(const String path, String* content);                        // 读取SD卡文件内容
+void writeFile(const String path,String* content);      // 写入内容到SD卡文件
+void writeFile(const String path,String* content, bool overwrite); // 写入内容到SD卡文件，是否覆盖
 void SdCardSetup();                                // 初始化SD卡
+void readConfig();                             // 读取配置文件-从SD卡
 // ========== 初始化 ==========
 
 void setup() {
@@ -48,7 +51,7 @@ void setup() {
   Serial.begin(115200);
   Serial.print("MAC Address: ");
   Serial.println(macAddress); 
-
+  SdCardSetup();                                // 初始化SD卡
   setup_wifi();                                 //连接WiFi
   initTime();                                   //初始化时间
   client.setServer(mqtt_server, mqtt_port);     //设置MQTT服务器
@@ -56,7 +59,10 @@ void setup() {
   if (!client.connected()) {                    //连接MQTT服务器
     reconnect();
   }
-  getConfig();                                  //获取配置信息
+  readConfig();                                  //获取配置信息
+  if(isConfiged==false){
+      getConfig();                                  //获取配置信息
+  }
 }
 
 // ========== 主循环 ==========
@@ -165,6 +171,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   Serial.printf("收到配置 topic=%s, msg=%s\n", topic, msg.c_str());
 
   if (msg.indexOf("channels") >= 0 && msg.indexOf("samplingPeriod") >= 0) {
+    writeFile("/config.txt",&msg,OVERWRITE); // 将配置信息写入SD卡
     int c1 = msg.indexOf("channels");
     int c2 = msg.indexOf("samplingPeriod");
 
@@ -232,23 +239,28 @@ void getConfig(){
   Serial.printf("channels=%d, samplingPeriod=%d\n", channels, period);
 }
 
-void readFile(String path,String* content) {
+bool readFile(const String path, String *content) {
   File file = SD.open(path.c_str(), FILE_READ);
   if (!file) {
     Serial.println("Failed to open file.");
-    return;
+    return false;
   }
 
+  content->clear();
   Serial.println("----- File Content -----");
+
   while (file.available()) {
-    Serial.write(file.read());
     char ch = file.read();
+    Serial.write(ch);
     content->concat(ch);
   }
+
   file.close();
+  return true;
 }
 
-void writeFile(String path,String* content) {
+
+void writeFile(const String path,String* content) {
   File file = SD.open(path.c_str(), FILE_APPEND);
   if (!file) {
     Serial.println("Open file failed!");
@@ -257,6 +269,46 @@ void writeFile(String path,String* content) {
   file.println(*content);
   file.close();
   Serial.println("Write finished.");
+}
+
+void writeFile(const String path,String* content, bool overwrite) {
+  File file = SD.open(path.c_str(), FILE_WRITE);
+  if (!file) {
+    Serial.println("Open file failed!");
+    return;
+  }
+  file.println(*content);
+  file.close();
+  Serial.println("Write finished.");
+}
+
+void readConfig() {
+  String content = "";
+  if (!readFile("/config.txt", &content)) {
+    Serial.println("Failed to read config file.");
+    return;
+  }
+
+  Serial.println("Config file content:");
+  Serial.println(content);
+
+  // JSON 解析
+  StaticJsonDocument<256> doc;
+  DeserializationError err = deserializeJson(doc, content);
+
+  if (err) {
+    Serial.print("JSON parse failed: ");
+    Serial.println(err.f_str());
+    return;
+  }
+
+  // 提取字段
+  channels = doc["channels"];
+  period   = doc["samplingPeriod"];
+
+  isConfiged = true;
+  Serial.printf("Config loaded: channels=%d, samplingPeriod=%d\n", 
+                channels, period);
 }
 
 void SdCardSetup() {
